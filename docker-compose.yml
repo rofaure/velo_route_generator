@@ -22,6 +22,23 @@ services:
       - ./profiles:/profiles2
     restart: unless-stopped
 
+# ---------------------------------------------------------------------
+  # Interface web BRouter (carte interactive) branchee sur le moteur local
+  # ---------------------------------------------------------------------
+  brouter-web:
+    build:
+      context: "https://github.com/nrenner/brouter-web.git"
+    image: brouter-web-local:latest
+    container_name: brouter-web
+    ports:
+      - "8080:80"
+    volumes:
+      - ./brouter-web-config/config.js:/usr/share/nginx/html/config.js:ro
+      - ./brouter-web-config/keys.js:/usr/share/nginx/html/keys.js:ro
+      - ./profiles:/usr/share/nginx/html/profiles2:ro
+    depends_on:
+      - brouter
+    restart: unless-stopped
   # ---------------------------------------------------------------------
   # Application Python (optionnelle - pour t'entrainer a conteneuriser).
   # Ne demarre PAS par defaut (profile "tools"). Usage a la demande :
