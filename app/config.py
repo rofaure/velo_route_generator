@@ -12,7 +12,7 @@ Un seul endroit à éditer pour changer le point de départ ou les défauts.
 #   1. Ouvrir https://brouter.de/brouter-web/
 #   2. Clic droit sur la boulangerie -> les coordonnees s'affichent
 #   3. Reporter ici au format (lon, lat)
-START_LONLAT = (6.3025, 46.2445)  # <-- placeholder Saint-Cergues centre
+START_LONLAT = (6.318631, 46.231524)  # Boulangerie Meerpoel, 1555 rue des Allobroges
 START_NAME = "Boulangerie Meerpoel"
 
 # --------------------------------------------------------------------------

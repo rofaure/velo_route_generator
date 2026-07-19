@@ -96,7 +96,6 @@ assign is_forbidden_road =
   or surface=sand
   or surface=mud
   or surface=pebblestone
-  or surface=woodchips
   or surface=cobblestone
   or tracktype=grade2
   or tracktype=grade3

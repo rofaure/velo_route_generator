@@ -1,0 +1,9 @@
+# tuiles de routage (lourdes, se retelechargent)
+segments/*.rd5
+# sorties
+output/*.gpx
+# python
+__pycache__/
+*.pyc
+# depot brouter clone en local (si contexte de build local)
+brouter/
