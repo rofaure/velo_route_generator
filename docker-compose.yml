@@ -1,0 +1,41 @@
+services:
+  # ---------------------------------------------------------------------
+  # Moteur de routage BRouter (serveur HTTP sur le port 17777)
+  # L'image est CONSTRUITE depuis le depot officiel (multi-stage gradle+jdk).
+  # ---------------------------------------------------------------------
+  brouter:
+    build:
+      # Docker sait construire directement depuis une URL git.
+      # Alternative si ta version de Docker refuse : clone le depot a cote
+      #   git clone --depth 1 https://github.com/abrensch/brouter.git
+      # puis remplace la ligne suivante par :  context: ./brouter
+      context: "https://github.com/abrensch/brouter.git"
+    image: brouter-local:latest
+    container_name: brouter
+    ports:
+      - "17777:17777"
+    volumes:
+      # Tuiles de routage (.rd5) : a telecharger via download_segments.sh
+      - ./segments:/segments4
+      # Nos profils : ce montage REMPLACE le dossier profils de l'image.
+      # Il doit contenir lookups.dat + roadonly.brf (deja fournis).
+      - ./profiles:/profiles2
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # Application Python (optionnelle - pour t'entrainer a conteneuriser).
+  # Ne demarre PAS par defaut (profile "tools"). Usage a la demande :
+  #   docker compose run --rm app --distance 60 --keep 3
+  # ---------------------------------------------------------------------
+  app:
+    build: ./app
+    profiles: ["tools"]
+    depends_on:
+      - brouter
+    environment:
+      # dans le reseau compose, le moteur s'appelle "brouter", pas localhost
+      BROUTER_URL: "http://brouter:17777"
+    volumes:
+      - ./output:/app/../output
+    # les arguments passes apres 'run --rm app' sont transmis a main.py
+    entrypoint: ["python", "main.py"]
