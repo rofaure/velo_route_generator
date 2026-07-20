@@ -56,3 +56,15 @@ services:
       - ./output:/app/../output
     # les arguments passes apres 'run --rm app' sont transmis a main.py
     entrypoint: ["python", "main.py"]
+
+  streamlit:
+    build: ./app
+    container_name: streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      BROUTER_URL: "http://brouter:17777"
+    depends_on:
+      - brouter
+    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    restart: unless-stopped

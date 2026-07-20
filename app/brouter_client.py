@@ -9,6 +9,8 @@ Parametres HTTP supportes par le serveur (verifie dans ServerHandler.java) :
   lonlats, nogos, profile, alternativeidx, format, trackname, heading, ...
 """
 
+import json
+
 import requests
 
 import config
@@ -101,3 +103,60 @@ def parse_csv(body):
 
 def total_length_km(csv_rows):
     return sum(r["dist_m"] for r in csv_rows) / 1000.0
+
+
+def _parse_geojson_messages(messages):
+    """Transforme le tableau 'messages' du GeoJSON en liste de segments."""
+    if not messages:
+        return []
+    out = []
+    for row in messages[1:]:  # 1re ligne = en-tete
+        rec = dict(zip(_CSV_COLS, row))
+        try:
+            lon = int(rec["Longitude"]) / 1_000_000
+            lat = int(rec["Latitude"]) / 1_000_000
+        except (ValueError, KeyError):
+            try:
+                lon = float(rec["Longitude"]); lat = float(rec["Latitude"])
+            except (ValueError, KeyError):
+                continue
+        out.append({
+            "lon": lon, "lat": lat,
+            "dist_m": float(rec.get("Distance") or 0),
+            "waytags": rec.get("WayTags", "") or "",
+        })
+    return out
+
+
+def route_geojson(lonlats, profile=None, heading=None, alternativeidx=0):
+    """Route en GeoJSON et renvoie geometrie dense + altitude + D+ + segments.
+
+    Renvoie un dict :
+      coords         : [[lon, lat, ele], ...]  (trace dense, altitude en m)
+      length_m       : longueur routee (m)
+      ascend_m       : denivele positif filtre (m)   <- le D+
+      plain_ascend_m : denivele positif brut (m)
+      total_time_s   : temps estime par BRouter (s)
+      segments       : [{lon, lat, dist_m, waytags}, ...] pour l'audit surface
+    """
+    body = route(lonlats, profile=profile, fmt="geojson",
+                 heading=heading, alternativeidx=alternativeidx)
+    data = json.loads(body)
+    feat = data["features"][0]
+    props = feat.get("properties", {})
+    geom = feat.get("geometry", {})
+
+    def _f(key, default=0.0):
+        try:
+            return float(props.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "coords": geom.get("coordinates", []),
+        "length_m": _f("track-length"),
+        "ascend_m": _f("filtered ascend"),
+        "plain_ascend_m": _f("plain-ascend"),
+        "total_time_s": _f("total-time"),
+        "segments": _parse_geojson_messages(props.get("messages")),
+    }

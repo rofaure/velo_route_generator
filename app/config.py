@@ -4,16 +4,20 @@ Un seul endroit à éditer pour changer le point de départ ou les défauts.
 """
 
 # --------------------------------------------------------------------------
-# POINT DE DEPART  (lon, lat)  -- ATTENTION : ordre lon PUIS lat (convention BRouter/GeoJSON)
+# POINTS DE DEPART possibles (lon, lat). Choisir son depart = choisir sa zone
+# de sortie. Pour rouler en Suisse (La Cote/Vaud), partir de Nyon ou Gland.
 # --------------------------------------------------------------------------
-# Valeur PLACEHOLDER : centre approximatif de Saint-Cergues.
-# >>> A REMPLACER par la coordonnee exacte de la boulangerie Meerpoel. <<<
-# Comment l'obtenir precisement (une seule fois) :
-#   1. Ouvrir https://brouter.de/brouter-web/
-#   2. Clic droit sur la boulangerie -> les coordonnees s'affichent
-#   3. Reporter ici au format (lon, lat)
-START_LONLAT = (6.318631, 46.231524)  # Boulangerie Meerpoel, 1555 rue des Allobroges
-START_NAME = "Boulangerie Meerpoel"
+START_POINTS = {
+    "Saint-Cergues (maison)": (6.318631, 46.231524),  # Boulangerie Meerpoel
+    "Nyon (CH, La Cote)": (6.235, 46.383),
+    "Gland (CH, La Cote)": (6.269, 46.420),
+    "Divonne-les-Bains (Pays de Gex, plat)": (6.140, 46.357),
+    "Thonon-les-Bains (Chablais)": (6.479, 46.371),
+}
+
+# Depart par defaut (retro-compatibilite)
+START_LONLAT = START_POINTS["Saint-Cergues (maison)"]
+START_NAME = "Saint-Cergues (maison)"
 
 # --------------------------------------------------------------------------
 # MOTEUR BROUTER
@@ -29,7 +33,20 @@ REQUEST_TIMEOUT = 120         # secondes
 TARGET_KM = 60.0              # distance cible d'une boucle
 N_CANDIDATES = 8             # nombre de directions testees (boucles candidates)
 TOLERANCE = 0.15             # ecart max accepte vs cible (0.15 = +/-15%)
-MAX_ITERATIONS = 5           # iterations de convergence du rayon par boucle
+MAX_ITERATIONS = 6           # iterations de convergence du rayon par boucle
+
+# Ecart max (m) entre 2 points du trace avant de considerer un segment "a vol
+# d'oiseau" (point non routable, ex. traversee de lac) et de rejeter la boucle.
+BEELINE_GAP_M = 800
+
+# Forme des boucles
+WAYPOINTS_PER_LOOP = 5    # points de passage sur le cercle (plus = boucle plus ronde)
+OVERLAP_MAX = 0.35        # rejet si plus de 35 % du trace repasse sur lui-meme (aller-retour)
+MAX_DIST_ERROR = 0.20     # rejet si distance a plus de +/-20 % de la cible
+
+# Etiquette de terrain (D+/km)
+TERRAIN_FLAT_MAX = 8.0    # < 8 m/km  -> Plat
+TERRAIN_HILLY_MAX = 15.0  # 8-15 m/km -> Vallonne ; > 15 -> Cols
 
 # --------------------------------------------------------------------------
 # CLASSIFICATION DES SURFACES (pour l'audit)
