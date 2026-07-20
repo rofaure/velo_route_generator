@@ -24,7 +24,14 @@ START_NAME = "Saint-Cergues (maison)"
 # --------------------------------------------------------------------------
 import os
 BROUTER_URL = os.environ.get("BROUTER_URL", "http://localhost:17777")
-PROFILE = "roadonly"          # nom du .brf (sans extension) present dans ./profiles
+PROFILE = "roadonly"          # profil par defaut
+
+# Type de sortie (label affiche -> nom du profil .brf dans ./profiles)
+PROFILES_UI = {
+    "Route classique (no-gravel)": "roadonly",
+    "Plat / voies vertes": "greenway",
+    "Vallonne / cols": "roadclimb",
+}
 REQUEST_TIMEOUT = 120         # secondes
 
 # --------------------------------------------------------------------------

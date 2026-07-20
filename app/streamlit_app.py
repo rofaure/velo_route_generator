@@ -95,7 +95,7 @@ def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=
 # En-tête
 # ----------------------------------------------------------------------
 st.title("🚴 Générateur de tracés vélo route")
-st.caption(f"Profil « {config.PROFILE} »  ·  moteur {config.BROUTER_URL}")
+st.caption(f"Moteur {config.BROUTER_URL}")
 
 # ----------------------------------------------------------------------
 # Réglages (barre latérale)
@@ -112,6 +112,9 @@ with st.sidebar:
                                   placeholder="Nyon\nGland", height=100)
 
     st.header("Paramètres")
+    ride_type = st.selectbox("Type de sortie", list(config.PROFILES_UI.keys()),
+                             help="Plat = privilégie voies vertes et évite le dénivelé. "
+                                  "Cols = terrain vallonné, trié par D+.")
     distance = st.slider("Distance cible (km)", 20, 150, int(config.TARGET_KM), step=5,
                          help="Référence : avec des points de passage, la distance s'adapte à la géographie.")
     n_candidates = st.slider("Nombre de variantes testées", 6, 24, 12, step=2)
@@ -143,12 +146,14 @@ points_map(start, start_name, waypoints, wp_names, height=320)
 # Génération
 # ----------------------------------------------------------------------
 if go:
+    profile_name = config.PROFILES_UI[ride_type]
     with st.spinner("Génération des tracés…"):
         try:
             if waypoints:
-                routes = generate_via_waypoints(start, waypoints, distance, n_candidates)
+                routes = generate_via_waypoints(start, waypoints, distance, n_candidates,
+                                                profile=profile_name)
             else:
-                routes = generate_all(start, distance, n_candidates)
+                routes = generate_all(start, distance, n_candidates, profile=profile_name)
         except BRouterError as e:
             st.error(f"BRouter injoignable : {e}")
             routes = []
@@ -157,7 +162,10 @@ if go:
                    "ou ajuste les points de passage.")
     else:
         scored = [(lp, audit(lp["csv_rows"])) for lp in routes]
-        scored.sort(key=lambda x: (-x[1]["confidence"], abs(x[0]["length_km"] - distance)))
+        if profile_name == "roadclimb":
+            scored.sort(key=lambda x: (-x[0]["ascend_m"], -x[1]["confidence"]))
+        else:
+            scored.sort(key=lambda x: (-x[1]["confidence"], abs(x[0]["length_km"] - distance)))
         st.session_state["scored"] = scored
         st.session_state["distance"] = distance
         st.session_state["start_point"] = start
