@@ -55,6 +55,13 @@ MAX_DIST_ERROR = 0.20     # rejet si distance a plus de +/-20 % de la cible
 TERRAIN_FLAT_MAX = 8.0    # < 8 m/km  -> Plat
 TERRAIN_HILLY_MAX = 15.0  # 8-15 m/km -> Vallonne ; > 15 -> Cols
 
+# Estimations de sortie (defauts, reglables dans l'app)
+SPEED_FLAT_KMH = 27     # vitesse a plat
+SPEED_HILLY_KMH = 20    # vitesse en montagne (beaucoup de D+)
+WATER_LPH = 0.6         # litres d'eau par heure
+GEL_GPH = 45            # glucides par heure (g)
+GEL_G = 25              # glucides par gel (g)
+
 # --------------------------------------------------------------------------
 # CLASSIFICATION DES SURFACES (pour l'audit)
 # --------------------------------------------------------------------------

@@ -42,7 +42,7 @@ assign consider_town         = false  # %consider_town% | Activate to bypass cit
 assign consider_elevation = true  # %consider_elevation% | Set to false to ignore elevation in routing | boolean
 assign downhillcost       = 60    # %downhillcost% | Cost for going downhill | number
 assign downhillcutoff     = 1.5   # %downhillcutoff% | Gradients below this value in percents are not counted. | number
-assign uphillcost         = 60    # %uphillcost% | Cost for going uphill | number
+assign uphillcost         = 100    # %uphillcost% | Cost for going uphill | number
 assign uphillcutoff       = 1.5   # %uphillcutoff% | Gradients below this value in percents are not counted.  | number
 
 assign downhillcost       = if consider_elevation then downhillcost else 0

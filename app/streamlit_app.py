@@ -5,6 +5,7 @@ Couche de présentation par-dessus les modules métier (loop_generator,
 surface_audit, brouter_client, geo_utils, geocode).
 """
 
+import altair as alt
 import folium
 import pandas as pd
 import streamlit as st
@@ -13,7 +14,10 @@ from streamlit_folium import st_folium
 import config
 from loop_generator import generate_all, generate_via_waypoints
 from surface_audit import audit
-from geo_utils import colored_runs, classify_terrain
+from geo_utils import colored_runs
+from ride_analysis import (terrain_type, climbs, steep_descents,
+                           elevation_profile, estimate_ride,
+                           format_hm, CAT_ORDER, CAT_COLORS)
 from geocode import geocode_place
 from brouter_client import route, BRouterError
 
@@ -57,8 +61,7 @@ def build_ranking(scored):
     return pd.DataFrame([{
         "#": i + 1,
         "Type": lp.get("shape", "Boucle"),
-        "Terrain": classify_terrain(lp["length_km"], lp["ascend_m"],
-                                    config.TERRAIN_FLAT_MAX, config.TERRAIN_HILLY_MAX),
+        "Terrain": terrain_type(lp["coords"], lp["length_km"], lp["ascend_m"]),
         "Distance (km)": round(lp["length_km"], 1),
         "D+ (m)": round(lp["ascend_m"]),
         "Confiance": round(rep["confidence"], 1),
@@ -124,6 +127,12 @@ with st.sidebar:
     st.caption("Astuce : pour rouler en Suisse (La Côte / Vaud), pars de Nyon ou Gland.")
     st.caption("« Inconnu » = revêtement non tagué dans OSM, souvent une petite "
                "route bitumée. À vérifier sur la carte avant de rouler.")
+    with st.expander("Réglages estimation (eau, gels, vitesse)"):
+        speed_flat = st.slider("Vitesse à plat (km/h)", 20, 35, config.SPEED_FLAT_KMH)
+        speed_hilly = st.slider("Vitesse en montagne (km/h)", 12, 28, config.SPEED_HILLY_KMH)
+        water_lph = st.slider("Eau (L/h)", 0.3, 1.2, float(config.WATER_LPH), step=0.1)
+        gel_gph = st.slider("Glucides (g/h)", 20, 90, config.GEL_GPH, step=5)
+        gel_g = st.slider("Glucides par gel (g)", 15, 40, config.GEL_G, step=5)
 
 # ----------------------------------------------------------------------
 # Résolution des points + carte de confirmation (en direct)
@@ -219,3 +228,83 @@ with col_info:
             mime="application/gpx+xml", use_container_width=True)
     except BRouterError as e:
         st.warning(f"Export GPX indisponible : {e}")
+
+
+# ----------------------------------------------------------------------
+# Résumé de sortie (calculé automatiquement à partir du tracé)
+# ----------------------------------------------------------------------
+st.divider()
+st.subheader("Résumé de sortie")
+
+# Profil altimétrique colore par pente (style profil de col)
+prof_rows = elevation_profile(lp["coords"])
+if prof_rows:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    xs = [r["km"] for r in prof_rows]
+    ys = [r["alt"] for r in prof_rows]
+    baseline = min(ys) - 20
+    fig, ax = plt.subplots(figsize=(11, 3.2))
+    # remplissage colore par pente, segment par segment
+    for i in range(len(xs) - 1):
+        ax.fill_between([xs[i], xs[i + 1]], [ys[i], ys[i + 1]], baseline,
+                        color=prof_rows[i + 1]["color"], linewidth=0)
+    ax.plot(xs, ys, color="#444", linewidth=0.8)
+    # sommets (cols) : triangle + altitude
+    for c in climbs(lp["coords"]):
+        ax.plot(c["top_km"], c["top_ele_m"], marker="^", color="#222", markersize=9, zorder=5)
+        ax.annotate(f"{c['top_ele_m']:.0f} m", (c["top_km"], c["top_ele_m"]),
+                    textcoords="offset points", xytext=(0, 7), ha="center", fontsize=8)
+    ax.set_xlabel("Distance (km)")
+    ax.set_ylabel("Altitude (m)")
+    ax.set_ylim(bottom=baseline)
+    ax.margins(x=0.01)
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(handles=[Patch(color=CAT_COLORS[c], label=c) for c in CAT_ORDER],
+              title="Pente", loc="upper left", fontsize=8, title_fontsize=8, framealpha=0.85)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+# Estimations
+est = estimate_ride(lp["length_km"], lp["ascend_m"],
+                    speed_flat, speed_hilly, water_lph, gel_gph, gel_g)
+e1, e2, e3, e4 = st.columns(4)
+e1.metric("Temps estimé", format_hm(est["time_h"]))
+e2.metric("Vitesse moy.", f"{est['speed_kmh']:.0f} km/h")
+e3.metric("Eau", f"{est['water_l']:.1f} L")
+e4.metric("Gels", f"{est['gels']:.0f}")
+
+col_a, col_b = st.columns(2)
+
+with col_a:
+    st.markdown("**Ascensions**")
+    cl = climbs(lp["coords"])
+    if cl:
+        for c in cl:
+            st.write(f"• Montée : **{c['length_km']:.1f} km**, +{c['gain_m']:.0f} m, "
+                     f"{c['avg_grade_pct']:.1f} % moy — sommet à {c['top_km']:.0f} km")
+    else:
+        st.write("Aucune ascension soutenue.")
+
+with col_b:
+    st.markdown("**Points de vigilance**")
+    vig = []
+    for c in steep_descents(lp["coords"]):
+        vig.append(f"Descente raide : -{c['drop_m']:.0f} m sur {c['length_km']:.1f} km "
+                   f"({c['avg_grade_pct']:.1f} %)")
+    if rep["km_unknown"] >= 0.5:
+        vig.append(f"Surface inconnue : {rep['km_unknown']:.1f} km à vérifier avant de rouler")
+    if rep["km_suspect"] > 0:
+        vig.append(f"Surface suspecte : {rep['km_suspect']:.1f} km")
+    if vig:
+        for v in vig:
+            st.write("• " + v)
+    else:
+        st.write("Rien de particulier.")
+
+st.caption("Résumé calculé automatiquement depuis le tracé (indépendant des points de "
+           "passage). Les noms des cols et villages arrivent au Chunk 2.")
