@@ -1,155 +1,174 @@
-# Générateur de boucles vélo route (no-gravel)
+# Générateur de tracés vélo route
 
-Génère automatiquement des boucles de vélo de route au départ d'un point fixe
-(la boulangerie Meerpoel), en évitant les revêtements non adaptés (gravel,
-chemins), puis exporte le tracé en **GPX** prêt pour un Coros Dura.
+Application locale qui génère des itinéraires de **vélo de route** (bitume, sans gravel), au départ de n'importe quel point, avec audit de revêtement, profil altimétrique et résumé de sortie automatique (cols, villages, ravitaillement).
 
-Le moteur de routage est **BRouter**, tournant **100 % en local dans Docker** :
-pas de cloud, pas d'abonnement, pas de clé API. La seule donnée téléchargée est
-la tuile de carte OpenStreetMap (fichier `.rd5`), gratuite.
+Pensée pour la région **Léman / Chablais / Alpes du Nord**, mais fonctionne partout où les données OpenStreetMap sont disponibles.
 
----
+> Projet personnel — routage cyclable auto-hébergé, sans dépendance à un service en ligne au runtime.
 
-## Ce que fait le projet (et ce qu'il ne fait pas)
-
-Le pipeline en 3 temps :
-
-1. **Génération de boucles** — comme le serveur BRouter ne fait que du
-   point-à-point, la logique de boucle est en Python : on place des waypoints
-   autour du départ sur un cercle, on route, on ajuste le rayon jusqu'à
-   approcher la distance visée, et on répète dans plusieurs directions.
-2. **Routage sensible au revêtement** — le profil `roadonly.brf` (dérivé de
-   `fastbike`) **bloque** les surfaces explicitement non-route
-   (`gravel`, `unpaved`, `compacted`, `ground`, `tracktype` grade2-5, etc.).
-3. **Audit de confiance** — pour chaque boucle, on classe chaque tronçon en
-   *bitume confirmé* / *inconnu* / *suspect* et on calcule un score. Les
-   tronçons *inconnus* (non tagués dans OSM) sont listés avec un lien OSM pour
-   vérification avant de rouler.
-
-**Limite incontournable, à connaître :** le tag `surface` d'OSM est incomplet.
-Une petite route sans tag est invisible au filtre. Le projet **réduit fortement**
-le risque de gravel mais ne peut **pas garantir 100 % de bitume** — c'est
-impossible à partir des seules données OSM, quel que soit l'outil. D'où l'audit,
-qui rend le risque visible plutôt que de le masquer.
+![Aperçu de l'application](image-2.png)
 
 ---
 
-## Prérequis
+## Ce que fait l'outil
 
-- Docker + Docker Compose (Docker Desktop sur Mac/Windows, `docker` + plugin
-  compose sur Linux).
-- Rien d'autre : ni Java, ni Python en local (tout est conteneurisé). Le Python
-  peut aussi se lancer en local si tu préfères (voir plus bas).
+- **Génère plusieurs tracés** au départ d'un point : boucles rondes *et* aller-retours, mélangés pour laisser le choix.
+- **Évite le gravel** grâce à un profil de routage BRouter dédié qui interdit les surfaces non bitumées connues.
+- **Audite le revêtement** de chaque tracé : part de bitume confirmé / inconnu (non tagué OSM) / suspect, avec les tronçons à vérifier avant de rouler.
+- **Trois types de sortie** : route classique, plat / voies vertes, vallonné / cols.
+- **Points de passage imposés** : on peut viser un ou plusieurs lieux (adresse ou coordonnées) par lesquels tous les tracés passent.
+- **Profil altimétrique** coloré par pente (façon profil de col), avec les sommets nommés.
+- **Résumé de sortie automatique** : ascensions (longueur, D+, pente, nom du col ou du village), villages traversés, points de vigilance, et estimation temps / eau / gels réglable.
+- **Export GPX** prêt pour un compteur / une montre GPS.
 
 ---
 
-## Installation (première fois)
+## Architecture
 
-1. **Télécharger la tuile de carte** couvrant Saint-Cergues :
-   ```sh
-   ./download_segments.sh
-   ```
-   Récupère `E5_N45.rd5` (~150-200 Mo) dans `./segments`. Cette tuile couvre
-   lon 5-10 / lat 45-50, soit tout le Léman, le Chablais et la Haute-Savoie.
+L'application est une **stack multi-conteneurs** orchestrée par Docker Compose. Tout tourne en local : le seul appel réseau est une **ingestion unique** des données de référence (voir plus bas).
 
-2. **Construire et lancer le moteur BRouter** :
-   ```sh
-   docker compose up -d --build brouter
-   ```
-   Le premier build compile BRouter depuis les sources (quelques minutes, une
-   seule fois). Ensuite le conteneur démarre en quelques secondes. Vérifier :
-   ```sh
-   docker compose ps          # brouter doit être "running"
-   docker compose logs brouter
-   ```
+```mermaid
+flowchart LR
+  U([Utilisateur]) --> ST[streamlit - interface + logique métier]
+  ST -- "profils roadonly / greenway / roadclimb - GET /brouter - GeoJSON + altitude" --> BR[brouter - moteur de routage]
+  BR -- "tuiles .rd5 - OSM" --- SEG[(segments/*.rd5)]
+  ST -- "jointure locale" --> REF[(app/data - cols.json, places.json)]
+  BW[brouter-web - carte interactive] --> BR
 
-3. **Renseigner le point de départ exact** dans `app/config.py`
-   (`START_LONLAT`). La valeur par défaut est un placeholder au centre de
-   Saint-Cergues. Pour la coordonnée précise de la boulangerie : clic droit sur
-   https://brouter.de/brouter-web/ → les coordonnées `(lon, lat)` s'affichent.
+  subgraph Docker Compose
+    ST
+    BR
+    BW
+  end
+```
+
+| Service | Rôle | Port |
+|---|---|---|
+| `brouter` | Moteur de routage BRouter (build multi-stage depuis les sources). Consomme les tuiles OSM `.rd5` et applique les profils personnalisés. | `17777` |
+| `brouter-web` | Client cartographique officiel de BRouter, branché sur le moteur local (tracé manuel, vérification). | `8080` |
+| `streamlit` | Interface principale + toute la logique métier (génération, audit, analyse, estimations). | `8501` |
+
+Le service `streamlit` et l'application CLI partagent **la même image Docker**, lancée avec deux commandes différentes.
+
+### Flux de données d'un tracé
+
+1. `streamlit` place des points de passage géométriques et interroge `brouter` en **GeoJSON** (géométrie dense + altitude par point + D+).
+2. Les tracés à vol d'oiseau (point non routable, ex. traversée de lac) et les aller-retours involontaires sont **rejetés automatiquement**.
+3. Chaque tracé est **audité** (surface par segment) et **analysé** en local (ascensions, terrain, cols/villages, estimations).
+4. Le tracé retenu est exporté en **GPX**.
+
+---
+
+## Patterns d'ingénierie
+
+Quelques choix qui font le sel du projet côté data / infra :
+
+- **Audit de surface en couches (medallion)** : la géométrie brute de BRouter (bronze) est découpée en segments avec leurs tags OSM, classés bitume / inconnu / suspect (silver), puis agrégés en un score de confiance et une liste de tronçons à risque (gold).
+- **Table de dimension locale** : les cols et villages sont **ingérés une seule fois** depuis Overpass (`build_reference.py`), stockés en JSON local (`cols.json`, `places.json`), puis joints par proximité spatiale au runtime — **aucune requête en ligne** ensuite. Scalable et hors-ligne.
+- **Routage sensible au revêtement** : profils BRouter personnalisés (`.brf`) dérivés de `fastbike`, qui interdisent le gravel et déclinent le comportement selon le type de sortie (plat vs cols).
+- **Génération de boucles robuste** : placement de waypoints sur un cercle, convergence itérative du rayon vers la distance cible, et filtres qualité (vol d'oiseau, recouvrement, écart à la cible) avant de présenter un tracé.
+- **Honnêteté des données** : le revêtement « inconnu » est signalé, pas masqué — l'outil réduit le risque de gravel sans jamais prétendre le garantir (les tags `surface` d'OSM sont incomplets).
+
+---
+
+## Stack technique
+
+- **Routage** : [BRouter](https://github.com/abrensch/brouter) (Java), tuiles OpenStreetMap `.rd5`
+- **Backend / logique** : Python — `requests`, `pandas`
+- **Interface** : `streamlit`, `folium` + `streamlit-folium` (cartes Leaflet), `matplotlib` (profil altimétrique)
+- **Géocodage** : Nominatim (adresses → coordonnées, contraint France + Suisse)
+- **Données de référence** : Overpass API (ingestion unique)
+- **Infra** : Docker + Docker Compose
+
+---
+
+## Démarrage rapide
+
+Prérequis : **Docker** + **Docker Compose**.
+
+```sh
+# 1. Récupérer la tuile de carte (OSM) couvrant la région
+./download_segments.sh
+
+# 2. Construire et lancer le moteur de routage (long au 1er build)
+docker compose up -d --build brouter
+
+# 3. Lancer l'interface
+docker compose up -d --build streamlit
+# -> http://localhost:8501
+```
+
+Optionnel — la carte interactive BRouter :
+```sh
+docker compose up -d --build brouter-web   # -> http://localhost:8080
+```
+
+### Données de référence (noms des cols et villages)
+
+À lancer **une seule fois** (nécessite un accès internet le temps de l'ingestion) :
+
+```sh
+cd app
+python build_reference.py     # interroge Overpass, écrit app/data/*.json
+cd ..
+docker compose up -d --build streamlit
+```
+
+Sans cette étape, l'application fonctionne, mais les sommets s'affichent sans nom.
 
 ---
 
 ## Utilisation
 
-**Option A — Python en local** (itération rapide) :
-```sh
-cd app
-pip install -r requirements.txt
-python main.py --distance 60 --candidates 8 --keep 3
-```
+1. Choisir un **point de départ** (raccourci, adresse, ou `lat, lon`).
+2. Optionnel : ajouter des **points de passage** (un par ligne).
+3. Régler la **distance cible**, le **type de sortie**, le nombre de variantes.
+4. **Générer** -> comparer les tracés (type, terrain, distance, D+, confiance surface).
+5. Sélectionner un tracé pour voir la **carte colorée par surface**, le **profil altimétrique** et le **résumé de sortie**, puis **exporter le GPX**.
 
-**Option B — tout dans Docker** (pour s'entraîner à conteneuriser) :
-```sh
-docker compose run --rm app --distance 60 --candidates 8 --keep 3
-```
-
-Arguments :
-
-- `--distance` : distance cible en km (défaut 60)
-- `--candidates` : nombre de directions testées = nombre de boucles proposées (défaut 8)
-- `--keep` : nombre de meilleures boucles exportées en GPX (défaut 1)
-
-Sortie : un classement des boucles par score de confiance surface, le détail
-des tronçons à vérifier pour les meilleures, et les fichiers GPX dans `./output`.
-
+![Aperçu du résumé de tracé](image-1.png)
 ---
 
-## Notes Docker (le pourquoi du comment)
+## Structure du projet
 
-Puisque l'objectif est aussi d'apprendre la conteneurisation, voici la logique
-de chaque brique :
-
-- **`docker-compose.yml`** orchestre deux services. `brouter` est le moteur ;
-  `app` est le script Python (optionnel, dans le *profile* `tools`, donc il ne
-  démarre pas tout seul — il se lance à la demande avec `docker compose run`).
-
-- **Build depuis une URL git** : le service `brouter` n'a pas de Dockerfile
-  local. Son `context` pointe directement sur le dépôt GitHub officiel ; Docker
-  clone et construit l'image (multi-stage : une étape `gradle` compile le `.jar`,
-  une étape `jdk-slim` ne garde que le runtime — c'est pour ça que l'image finale
-  est légère). Si ta version de Docker refuse le contexte git distant, clone le
-  dépôt à côté et remplace la ligne `context:` (indiqué dans le fichier).
-
-- **Volumes** (`./segments:/segments4` et `./profiles:/profiles2`) : ce sont des
-  *bind mounts*. Ils font apparaître tes dossiers hôtes à l'intérieur du
-  conteneur. Le montage sur `/profiles2` **remplace** le dossier de profils de
-  l'image par le tien — c'est comme ça que `roadonly.brf` et `lookups.dat`
-  (obligatoire, c'est la table des tags OSM) sont fournis au moteur. Modifier un
-  profil ne nécessite donc **pas** de rebuild : tu édites le `.brf` et tu
-  relances le conteneur.
-
-- **Réseau compose** : quand le Python tourne dans le conteneur `app`, il joint
-  le moteur via `http://brouter:17777` (le nom du service fait office de nom
-  d'hôte), pas `localhost`. C'est géré par la variable d'environnement
-  `BROUTER_URL` dans le compose.
-
-Commandes utiles :
-```sh
-docker compose up -d --build brouter   # (re)construire + démarrer le moteur
-docker compose down                    # tout arrêter
-docker compose logs -f brouter         # suivre les logs
+```
+velo-route-generator/
+├── docker-compose.yml          # orchestration des 3 services
+├── download_segments.sh        # téléchargement de la tuile OSM (.rd5)
+├── profiles/                   # profils BRouter + table de tags OSM
+│   ├── lookups.dat
+│   ├── roadonly.brf            # route classique (no-gravel)
+│   ├── greenway.brf            # plat / voies vertes
+│   └── roadclimb.brf           # vallonné / cols
+├── brouter-web-config/         # config du client cartographique
+├── segments/                   # tuiles .rd5 (non versionnées)
+└── app/
+    ├── Dockerfile
+    ├── streamlit_app.py        # interface principale
+    ├── main.py                 # variante ligne de commande
+    ├── config.py               # départ, profils, seuils, estimations
+    ├── loop_generator.py       # génération boucles / aller-retours / via points
+    ├── brouter_client.py       # client HTTP BRouter (GeoJSON, GPX)
+    ├── surface_audit.py        # audit de revêtement
+    ├── geo_utils.py            # géométrie (haversine, cap, recouvrement, couleurs)
+    ├── ride_analysis.py        # ascensions, terrain, profil, estimations
+    ├── geocode.py              # géocodage adresses (Nominatim)
+    ├── build_reference.py      # ingestion one-shot cols + villages (Overpass)
+    ├── ride_reference.py       # jointure locale cols / villages
+    └── data/                   # cols.json, places.json (jeu de référence)
 ```
 
 ---
 
-## Personnalisation
+## Limites connues (assumées)
 
-- **Changer la sévérité du filtre surface** : éditer `profiles/roadonly.brf`.
-  Le bloc `assign is_forbidden_road = ...` liste les surfaces bloquées.
-  Retirer/ajouter des valeurs, puis relancer le conteneur `brouter`.
-- **Changer la liste des surfaces « bitume »** de l'audit : `PAVED_SURFACES`
-  dans `app/config.py`.
-- **Boucles trop courtes / trop longues** : jouer sur `--distance` et
-  `TOLERANCE` / `MAX_ITERATIONS` dans `config.py`.
+- **Revêtement** : le « 100 % bitume » n'est pas garantissable — les tags `surface` d'OSM sont incomplets. L'outil réduit fortement le risque de gravel et signale l'incertitude.
+- **Géographie** : depuis un point cerné par un lac ou des vallées en cul-de-sac, une boucle *propre* longue (100 km+) peut être difficile à générer. Choisir un autre départ est souvent la vraie réponse.
+- **Nommage des sommets** : par proximité (col ≤ 1,5 km et altitude cohérente à ±120 m, sinon village le plus proche). Un simple point haut de route sans col répertorié reste nommé par son village.
+- **Type « cols »** : BRouter sait *éviter* le dénivelé (profil plat), mais pas le *chercher* activement — le mode cols est un profil « climb-friendly » + un tri par D+.
 
 ---
 
-## Bémol honnête sur les boucles auto
+## Licence
 
-Une boucle générée optimise le coût de routage, **pas l'intérêt du parcours**.
-La distance est approchée (deux boucles de « 60 km » n'ont ni le même dénivelé
-ni le même temps), et l'algorithme peut ignorer un joli col qui n'a aucune
-raison d'apparaître dans le calcul. C'est pour ça que le script en **propose
-plusieurs** : génère, compare sur distance + confiance, et choisis. Pas « la
-boucle parfaite du premier coup ».
+Projet personnel. BRouter et les données OpenStreetMap sont sous leurs licences respectives (© contributeurs OpenStreetMap, ODbL).

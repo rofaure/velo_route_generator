@@ -19,6 +19,7 @@ from ride_analysis import (terrain_type, climbs, steep_descents,
                            elevation_profile, estimate_ride,
                            format_hm, CAT_ORDER, CAT_COLORS)
 from geocode import geocode_place
+from ride_reference import summit_name, villages_along_route, has_reference
 from brouter_client import route, BRouterError
 
 st.set_page_config(page_title="Tracés vélo route", page_icon="🚴", layout="wide")
@@ -71,7 +72,7 @@ def build_ranking(scored):
 
 
 def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=None,
-               trace_segments=None):
+               trace_segments=None, cols=None):
     """Carte folium : départ (vert) + points de passage (rouges numérotés).
     Si trace_coords est fourni, dessine aussi le tracé coloré par surface."""
     fmap = folium.Map(location=[start[1], start[0]], zoom_start=11, tiles="CartoDB positron")
@@ -88,6 +89,13 @@ def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=
         folium.Marker([wp[1], wp[0]], tooltip=f"{i}. {name}",
                       icon=folium.Icon(color="red", icon="flag", prefix="fa")).add_to(fmap)
         all_pts.append([wp[1], wp[0]])
+    for c in (cols or []):
+        nm = c.get("name")
+        label = f"{nm} · {c['ele']:.0f} m" if nm else f"{c['ele']:.0f} m"
+        icon_name = "mountain" if c.get("kind") == "col" else "location-dot"
+        folium.Marker([c["lat"], c["lon"]],
+                      tooltip=folium.Tooltip(label, permanent=True, direction="top"),
+                      icon=folium.Icon(color="purple", icon=icon_name, prefix="fa")).add_to(fmap)
 
     if len(all_pts) > 1:
         fmap.fit_bounds(all_pts)
@@ -198,6 +206,15 @@ choice = st.selectbox("Tracé à visualiser", list(range(1, len(scored) + 1)),
                       format_func=lambda i: f"Tracé #{i}")
 lp, rep = scored[choice - 1]
 
+# Analyse pour le resume : ascensions nommees + villages (jointure locale)
+_climbs = climbs(lp["coords"])
+_named = [(c, summit_name(c["top_lat"], c["top_lon"], c["top_ele_m"])) for c in _climbs]
+_map_cols = [{"lat": c["top_lat"], "lon": c["top_lon"], "ele": c["top_ele_m"],
+             "name": (s["name"] if s else None),
+             "kind": (s["kind"] if s else None)}
+            for c, s in _named]
+_villages = villages_along_route(lp["coords"])
+
 col_map, col_info = st.columns([2, 1])
 
 with col_map:
@@ -206,7 +223,8 @@ with col_map:
                st.session_state.get("start_name", start_name),
                st.session_state.get("waypoints", []),
                st.session_state.get("wp_names", []),
-               height=520, trace_coords=lp["coords"], trace_segments=lp["csv_rows"])
+               height=520, trace_coords=lp["coords"], trace_segments=lp["csv_rows"],
+               cols=_map_cols)
     st.caption("🟢 bitume confirmé   ·   🟠 inconnu (non tagué OSM)   ·   🔴 suspect")
 
 with col_info:
@@ -253,11 +271,12 @@ if prof_rows:
         ax.fill_between([xs[i], xs[i + 1]], [ys[i], ys[i + 1]], baseline,
                         color=prof_rows[i + 1]["color"], linewidth=0)
     ax.plot(xs, ys, color="#444", linewidth=0.8)
-    # sommets (cols) : triangle + altitude
-    for c in climbs(lp["coords"]):
+    # sommets (cols) : triangle + nom (si connu) + altitude
+    for c, sm in _named:
         ax.plot(c["top_km"], c["top_ele_m"], marker="^", color="#222", markersize=9, zorder=5)
-        ax.annotate(f"{c['top_ele_m']:.0f} m", (c["top_km"], c["top_ele_m"]),
-                    textcoords="offset points", xytext=(0, 7), ha="center", fontsize=8)
+        lbl = f"{sm['name']}\n{c['top_ele_m']:.0f} m" if sm else f"{c['top_ele_m']:.0f} m"
+        ax.annotate(lbl, (c["top_km"], c["top_ele_m"]), textcoords="offset points",
+                    xytext=(0, 7), ha="center", fontsize=8)
     ax.set_xlabel("Distance (km)")
     ax.set_ylabel("Altitude (m)")
     ax.set_ylim(bottom=baseline)
@@ -282,10 +301,15 @@ col_a, col_b = st.columns(2)
 
 with col_a:
     st.markdown("**Ascensions**")
-    cl = climbs(lp["coords"])
-    if cl:
-        for c in cl:
-            st.write(f"• Montée : **{c['length_km']:.1f} km**, +{c['gain_m']:.0f} m, "
+    if _named:
+        for c, sm in _named:
+            if sm and sm["kind"] == "col":
+                head = f"**{sm['name']}** ({c['top_ele_m']:.0f} m)"
+            elif sm:
+                head = f"Montée vers **{sm['name']}**"
+            else:
+                head = "Montée"
+            st.write(f"• {head} : {c['length_km']:.1f} km, +{c['gain_m']:.0f} m, "
                      f"{c['avg_grade_pct']:.1f} % moy — sommet à {c['top_km']:.0f} km")
     else:
         st.write("Aucune ascension soutenue.")
@@ -306,5 +330,12 @@ with col_b:
     else:
         st.write("Rien de particulier.")
 
-st.caption("Résumé calculé automatiquement depuis le tracé (indépendant des points de "
-           "passage). Les noms des cols et villages arrivent au Chunk 2.")
+if _villages:
+    st.markdown("**Villages traversés** : " + " → ".join(_villages))
+
+if not has_reference():
+    st.info("Pour afficher les noms des cols et villages, lance une fois "
+            "`python build_reference.py` (dans app/), puis reconstruis l'app.")
+
+st.caption("Résumé calculé automatiquement depuis le tracé, indépendamment des points "
+           "de passage.")
