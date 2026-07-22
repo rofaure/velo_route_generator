@@ -28,6 +28,10 @@ assign validForBikes = true
 assign allow_steps           = true   # %allow_steps% | Set to false to disallow steps | boolean
 assign allow_ferries         = true   # %allow_ferries% | set to false to disallow ferries | boolean
 assign allow_motorways       = false  # %allow_motorways% | Set to true to allow motorways (useful in Asia / Oceania for example) | boolean
+assign avoid_traffic         = false  # %avoid_traffic% | Eviter les axes frequentes (nationales, departementales) | boolean
+assign avoid_traffic_strong  = false  # %avoid_traffic_strong% | Eviter fortement les axes frequentes | boolean
+assign prefer_cycleways      = false  # %prefer_cycleways% | Favoriser les amenagements cyclables (voies vertes) | boolean
+
 
 assign use_proposed_cycleroutes = false  # %use_proposed_cycleroutes% | Set to true to consider proposed and regular cycleroutes as equals | boolean
 
@@ -42,7 +46,7 @@ assign consider_town         = false  # %consider_town% | Activate to bypass cit
 assign consider_elevation = true  # %consider_elevation% | Set to false to ignore elevation in routing | boolean
 assign downhillcost       = 60    # %downhillcost% | Cost for going downhill | number
 assign downhillcutoff     = 1.5   # %downhillcutoff% | Gradients below this value in percents are not counted. | number
-assign uphillcost         = 100    # %uphillcost% | Cost for going uphill | number
+assign uphillcost         = 100   # %uphillcost% | Cost for going uphill | number
 assign uphillcutoff       = 1.5   # %uphillcutoff% | Gradients below this value in percents are not counted.  | number
 
 assign downhillcost       = if consider_elevation then downhillcost else 0
@@ -276,16 +280,16 @@ assign costfactor
 
 
   switch or highway=motorway highway=motorway_link    switch allow_motorways 1.5 10000
-  switch or highway=trunk highway=trunk_link          switch allow_motorways 1.5 10
-  switch or highway=primary highway=primary_link      1.2
-  switch or highway=secondary highway=secondary_link  1.1
+  switch or highway=trunk highway=trunk_link          switch allow_motorways 1.5 switch avoid_traffic 10000 10
+  switch or highway=primary highway=primary_link      switch avoid_traffic_strong 8.0 switch avoid_traffic 3.0 1.2
+  switch or highway=secondary highway=secondary_link  switch avoid_traffic_strong 3.0 switch avoid_traffic 1.8 1.1
   switch or highway=tertiary highway=tertiary_link    1.0
   switch    highway=unclassified                      switch isunpaved 10 1.1
   switch    highway=pedestrian                        switch hascycleway 1.3 5
   switch    highway=steps                             switch allow_steps 120 10000
   switch    route=ferry                               switch allow_ferries 5.67 10000
   switch    highway=bridleway                         5
-  switch    highway=cycleway                          0.6
+  switch    highway=cycleway                          switch prefer_cycleways 0.5 0.6
   switch    isresidentialorliving                     switch isunpaved 10 1.2
   switch    highway=service                           switch isunpaved 10 1.2
   switch or highway=track or highway=road or highway=path highway=footway

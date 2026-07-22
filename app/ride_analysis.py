@@ -192,3 +192,34 @@ def format_hm(time_h):
         h += 1
         m = 0
     return f"{h} h {m:02d}"
+
+
+# ----------------------------------------------------------------------
+# Recommandation de ravitaillement (glucides + eau par heure)
+# ----------------------------------------------------------------------
+INTENSITES = ["Endurance", "Tempo", "Intense"]
+METEOS = ["Frais (<15°C)", "Tempéré (15-25°C)", "Chaud (>25°C)"]
+
+
+def fuel_recommendation(intensity, meteo, duration_h):
+    """Recommande glucides (g/h) et eau (L/h) selon intensité, météo et durée.
+
+    Repères d'endurance grand public (à ajuster à son ressenti) :
+      - glucides : plus la sortie est longue/intense, plus le besoin monte,
+        de ~30 g/h (court/facile) à ~90 g/h (long/intense).
+      - eau : surtout fonction de la chaleur (~0,5 L/h frais -> ~1 L/h chaud).
+    """
+    if duration_h < 1.5:
+        base = {"Endurance": 30, "Tempo": 45, "Intense": 60}
+    elif duration_h <= 3.0:
+        base = {"Endurance": 45, "Tempo": 60, "Intense": 75}
+    else:
+        base = {"Endurance": 60, "Tempo": 75, "Intense": 90}
+    carbs = base.get(intensity, 45)
+
+    water = {"Frais (<15°C)": 0.5, "Tempéré (15-25°C)": 0.65,
+             "Chaud (>25°C)": 0.9}.get(meteo, 0.65)
+    if intensity == "Intense":
+        water += 0.1
+
+    return {"carbs_gph": carbs, "water_lph": round(water, 2)}

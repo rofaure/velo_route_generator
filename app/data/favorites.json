@@ -1,0 +1,43 @@
+[
+ {
+  "id": "583700f0",
+  "name": "Aller-retour 103 km",
+  "created": "2026-07-22T08:52:06",
+  "start": [
+   6.318631,
+   46.231524
+  ],
+  "start_name": "Saint-Cergues (maison)",
+  "waypoints": [
+   [
+    6.7091057,
+    46.1799561
+   ]
+  ],
+  "wp_names": [
+   "Morzine"
+  ],
+  "profile": null,
+  "profile_params": {},
+  "route_waypoints": [
+   [
+    6.318631,
+    46.231524
+   ],
+   [
+    6.7091057,
+    46.1799561
+   ],
+   [
+    6.318631,
+    46.231524
+   ]
+  ],
+  "bearing": null,
+  "length_km": 103.0,
+  "ascend_m": 1558,
+  "shape": "Aller-retour",
+  "terrain": "Cols",
+  "pct_paved": 83.6
+ }
+]

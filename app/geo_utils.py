@@ -67,15 +67,44 @@ def overlap_ratio(coords, cell_m=60.0, min_index_gap=20):
     return revisited / len(coords)
 
 
+def direction_arrows(coords, n=10):
+    """Positions régulières le long du tracé, avec le cap local.
+
+    Renvoie [(lat, lon, cap_deg), ...] : sert à dessiner des flèches indiquant
+    le sens de circulation sur la carte.
+    """
+    if not coords or len(coords) < 2 or n < 1:
+        return []
+    cum = [0.0]
+    for i in range(1, len(coords)):
+        cum.append(cum[-1] + haversine(coords[i - 1][0], coords[i - 1][1],
+                                       coords[i][0], coords[i][1]))
+    total = cum[-1]
+    if total <= 0:
+        return []
+
+    out, j = [], 1
+    for k in range(1, n + 1):
+        cible = total * k / (n + 1)
+        while j < len(cum) - 1 and cum[j] < cible:
+            j += 1
+        lon1, lat1 = coords[j - 1][0], coords[j - 1][1]
+        lon2, lat2 = coords[j][0], coords[j][1]
+        if haversine(lon1, lat1, lon2, lat2) <= 0:
+            continue
+        out.append((lat2, lon2, bearing(lon1, lat1, lon2, lat2)))
+    return out
+
+
 def classify_terrain(length_km, ascend_m, flat_max=8.0, hilly_max=15.0):
-    """Etiquette de terrain d'apres le ratio D+/km : Plat / Vallonne / Cols."""
+    """Etiquette de terrain d'apres le ratio D+/km : Plat / Vallonné / Cols."""
     if length_km <= 0:
         return "?"
     ratio = ascend_m / length_km
     if ratio < flat_max:
         return "Plat"
     if ratio < hilly_max:
-        return "Vallonne"
+        return "Vallonné"
     return "Cols"
 
 

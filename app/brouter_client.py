@@ -20,7 +20,7 @@ class BRouterError(RuntimeError):
     """Erreur de routage renvoyee par BRouter (point non mappe, pas de trace...)."""
 
 
-def _build_url(lonlats, profile, fmt, heading=None, alternativeidx=0):
+def _build_url(lonlats, profile, fmt, heading=None, alternativeidx=0, profile_params=None):
     # lonlats : liste de (lon, lat) -> "lon,lat|lon,lat|..."
     pts = "|".join(f"{lon:.6f},{lat:.6f}" for lon, lat in lonlats)
     params = {
@@ -31,17 +31,25 @@ def _build_url(lonlats, profile, fmt, heading=None, alternativeidx=0):
     }
     if heading is not None:
         params["heading"] = int(heading) % 360
+    # surcharge de variables du profil : "profile:xxx=valeur" (mecanisme natif BRouter)
+    # BRouter parse ces valeurs en nombre (Float.parseFloat) : les booleens
+    # doivent donc etre envoyes en 1 / 0, pas en "true" / "false".
+    for k, v in (profile_params or {}).items():
+        if isinstance(v, bool):
+            v = 1 if v else 0
+        params[f"profile:{k}"] = v
     return params
 
 
-def route(lonlats, profile=None, fmt="gpx", heading=None, alternativeidx=0):
+def route(lonlats, profile=None, fmt="gpx", heading=None, alternativeidx=0,
+          profile_params=None):
     """Appelle BRouter et renvoie le corps texte (gpx / geojson / csv).
 
     Leve BRouterError si BRouter renvoie une erreur (il repond souvent en
     HTTP 200 avec un corps texte commencant par une explication).
     """
     profile = profile or config.PROFILE
-    params = _build_url(lonlats, profile, fmt, heading, alternativeidx)
+    params = _build_url(lonlats, profile, fmt, heading, alternativeidx, profile_params)
     url = f"{config.BROUTER_URL}/brouter"
     try:
         r = requests.get(url, params=params, timeout=config.REQUEST_TIMEOUT)
@@ -128,7 +136,8 @@ def _parse_geojson_messages(messages):
     return out
 
 
-def route_geojson(lonlats, profile=None, heading=None, alternativeidx=0):
+def route_geojson(lonlats, profile=None, heading=None, alternativeidx=0,
+                  profile_params=None):
     """Route en GeoJSON et renvoie geometrie dense + altitude + D+ + segments.
 
     Renvoie un dict :
@@ -140,7 +149,8 @@ def route_geojson(lonlats, profile=None, heading=None, alternativeidx=0):
       segments       : [{lon, lat, dist_m, waytags}, ...] pour l'audit surface
     """
     body = route(lonlats, profile=profile, fmt="geojson",
-                 heading=heading, alternativeidx=alternativeidx)
+                 heading=heading, alternativeidx=alternativeidx,
+                 profile_params=profile_params)
     data = json.loads(body)
     feat = data["features"][0]
     props = feat.get("properties", {})

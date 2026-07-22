@@ -50,7 +50,7 @@ def _perimeter_factor(n_via):
     return n_via * 2 * math.sin(math.pi / n_via)
 
 
-def generate_loop(start, target_km, seed_bearing, profile=None):
+def generate_loop(start, target_km, seed_bearing, profile=None, profile_params=None):
     """Genere la boucle valide la plus proche de target_km. Renvoie un dict ou None."""
     n_via = config.WAYPOINTS_PER_LOOP
     target_m = target_km * 1000.0
@@ -60,7 +60,8 @@ def generate_loop(start, target_km, seed_bearing, profile=None):
     for _ in range(config.MAX_ITERATIONS):
         wpts = _waypoints(start, radius, seed_bearing, n_via)
         try:
-            r = route_geojson(wpts, profile=profile, heading=seed_bearing)
+            r = route_geojson(wpts, profile=profile, heading=seed_bearing,
+                              profile_params=profile_params)
         except BRouterError:
             return None
         coords = r["coords"]
@@ -101,12 +102,13 @@ def generate_loop(start, target_km, seed_bearing, profile=None):
     return best
 
 
-def generate_candidates(start, target_km, n_candidates, profile=None):
+def generate_candidates(start, target_km, n_candidates, profile=None, profile_params=None):
     """Teste n_candidates azimuts autour du depart et renvoie les boucles retenues."""
     loops = []
     for i in range(n_candidates):
         seed = (360.0 / n_candidates) * i
-        lp = generate_loop(start, target_km, seed, profile=profile)
+        lp = generate_loop(start, target_km, seed, profile=profile,
+                           profile_params=profile_params)
         if lp is not None:
             lp["shape"] = "Boucle"
             loops.append(lp)
@@ -127,7 +129,8 @@ def _route_dict(r, waypoints, seed_bearing, shape):
     }
 
 
-def generate_out_and_back(start, target_km, n_candidates, profile=None, dest=None):
+def generate_out_and_back(start, target_km, n_candidates, profile=None, dest=None,
+                          profile_params=None):
     """Genere des aller-retours (le filtre anti-recouvrement ne s'applique pas).
 
     dest fixe : un seul aller-retour start -> dest -> start.
@@ -138,7 +141,7 @@ def generate_out_and_back(start, target_km, n_candidates, profile=None, dest=Non
     if dest is not None:
         wpts = [start, dest, start]
         try:
-            r = route_geojson(wpts, profile=profile)
+            r = route_geojson(wpts, profile=profile, profile_params=profile_params)
         except BRouterError:
             return results
         if r["coords"] and max_gap_m(r["coords"]) <= config.BEELINE_GAP_M:
@@ -152,7 +155,8 @@ def generate_out_and_back(start, target_km, n_candidates, profile=None, dest=Non
             turn = forward(start[0], start[1], leg, seed)
             wpts = [start, turn, start]
             try:
-                r = route_geojson(wpts, profile=profile, heading=seed)
+                r = route_geojson(wpts, profile=profile, heading=seed,
+                              profile_params=profile_params)
             except BRouterError:
                 break
             if not r["coords"]:
@@ -169,11 +173,13 @@ def generate_out_and_back(start, target_km, n_candidates, profile=None, dest=Non
     return results
 
 
-def generate_all(start, target_km, n_candidates, profile=None, dest=None):
+def generate_all(start, target_km, n_candidates, profile=None, dest=None, profile_params=None):
     """Melange boucles rondes et aller-retours pour maximiser le choix."""
-    loops = generate_candidates(start, target_km, n_candidates, profile=profile)
+    loops = generate_candidates(start, target_km, n_candidates, profile=profile,
+                                profile_params=profile_params)
     n_oab = max(2, n_candidates // 3)
-    oab = generate_out_and_back(start, target_km, n_oab, profile=profile, dest=dest)
+    oab = generate_out_and_back(start, target_km, n_oab, profile=profile, dest=dest,
+                                profile_params=profile_params)
     return loops + oab
 
 
@@ -182,7 +188,8 @@ def _shape_of(coords):
     return "Aller-retour" if overlap_ratio(coords) > config.OVERLAP_MAX else "Boucle"
 
 
-def generate_via_waypoints(start, waypoints, target_km, n_candidates, profile=None):
+def generate_via_waypoints(start, waypoints, target_km, n_candidates, profile=None,
+                           profile_params=None):
     """Genere des traces passant OBLIGATOIREMENT par tous les points de passage.
 
     La distance cible n'est qu'une reference : on ajoute du detour pour s'en
@@ -209,7 +216,8 @@ def generate_via_waypoints(start, waypoints, target_km, n_candidates, profile=No
         base = [start] + seq + [start]
         for alt in range(2):
             try:
-                r = route_geojson(base, profile=profile, alternativeidx=alt)
+                r = route_geojson(base, profile=profile, alternativeidx=alt,
+                                  profile_params=profile_params)
             except BRouterError:
                 continue
             _add(base, r)
@@ -224,7 +232,8 @@ def generate_via_waypoints(start, waypoints, target_km, n_candidates, profile=No
         det = forward(mid[0], mid[1], leg * mag, axis + 90 * side)
         wpts = [start, det] + waypoints + [start]
         try:
-            r = route_geojson(wpts, profile=profile, heading=axis)
+            r = route_geojson(wpts, profile=profile, heading=axis,
+                              profile_params=profile_params)
         except BRouterError:
             continue
         _add(wpts, r)

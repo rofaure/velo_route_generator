@@ -5,12 +5,12 @@ Un seul endroit à éditer pour changer le point de départ ou les défauts.
 
 # --------------------------------------------------------------------------
 # POINTS DE DEPART possibles (lon, lat). Choisir son depart = choisir sa zone
-# de sortie. Pour rouler en Suisse (La Cote/Vaud), partir de Nyon ou Gland.
+# de sortie. Pour rouler en Suisse (La Côte/Vaud), partir de Nyon ou Gland.
 # --------------------------------------------------------------------------
 START_POINTS = {
     "Saint-Cergues (maison)": (6.318631, 46.231524),  # Boulangerie Meerpoel
-    "Nyon (CH, La Cote)": (6.235, 46.383),
-    "Gland (CH, La Cote)": (6.269, 46.420),
+    "Nyon (CH, La Côte)": (6.235, 46.383),
+    "Gland (CH, La Côte)": (6.269, 46.420),
     "Divonne-les-Bains (Pays de Gex, plat)": (6.140, 46.357),
     "Thonon-les-Bains (Chablais)": (6.479, 46.371),
 }
@@ -30,7 +30,14 @@ PROFILE = "roadonly"          # profil par defaut
 PROFILES_UI = {
     "Route classique (no-gravel)": "roadonly",
     "Plat / voies vertes": "greenway",
-    "Vallonne / cols": "roadclimb",
+    "Vallonné / cols": "roadclimb",
+}
+
+# Preference de trafic (label -> surcharges de parametres du profil BRouter)
+TRAFFIC_UI = {
+    "Aucun": {"avoid_traffic": False, "avoid_traffic_strong": False},
+    "Modéré": {"avoid_traffic": True, "avoid_traffic_strong": False},
+    "Maximal": {"avoid_traffic": True, "avoid_traffic_strong": True},
 }
 REQUEST_TIMEOUT = 120         # secondes
 

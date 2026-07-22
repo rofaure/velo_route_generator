@@ -14,12 +14,16 @@ from streamlit_folium import st_folium
 import config
 from loop_generator import generate_all, generate_via_waypoints
 from surface_audit import audit
-from geo_utils import colored_runs
+from geo_utils import colored_runs, direction_arrows
 from ride_analysis import (terrain_type, climbs, steep_descents,
-                           elevation_profile, estimate_ride,
-                           format_hm, CAT_ORDER, CAT_COLORS)
+                           elevation_profile, estimate_ride, fuel_recommendation,
+                           format_hm, CAT_ORDER, CAT_COLORS, INTENSITES, METEOS)
 from geocode import geocode_place
 from ride_reference import summit_name, villages_along_route, has_reference
+import favorites as fav
+import wind as wd
+from brouter_client import route_geojson
+from datetime import datetime, timedelta
 from brouter_client import route, BRouterError
 
 st.set_page_config(page_title="Tracés vélo route", page_icon="🚴", layout="wide")
@@ -58,6 +62,38 @@ def resolve_waypoints(text):
     return pts, names, failed
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_wind(lat, lon, iso_hour):
+    """Prévision mise en cache 30 min (évite de solliciter l'API à chaque clic)."""
+    return wd.fetch_wind(lat, lon, datetime.fromisoformat(iso_hour))
+
+
+def reverse_route(lp):
+    """Même tracé parcouru en sens inverse (D+ total inchangé sur une boucle)."""
+    return {**lp,
+            "coords": list(reversed(lp["coords"])),
+            "csv_rows": list(reversed(lp["csv_rows"])),
+            "waypoints": list(reversed(lp["waypoints"]))}
+
+
+def route_from_favorite(f):
+    """Recalcule le tracé d'un favori à partir de sa « recette »."""
+    wpts = [tuple(w) for w in f["route_waypoints"]]
+    r = route_geojson(wpts, profile=f.get("profile"),
+                      profile_params=f.get("profile_params"))
+    return {
+        "bearing": f.get("bearing"),
+        "length_km": r["length_m"] / 1000.0,
+        "ascend_m": r["ascend_m"],
+        "total_time_s": r["total_time_s"],
+        "overlap": None,
+        "shape": f.get("shape", "Boucle"),
+        "waypoints": wpts,
+        "coords": r["coords"],
+        "csv_rows": r["segments"],
+    }
+
+
 def build_ranking(scored):
     return pd.DataFrame([{
         "#": i + 1,
@@ -72,7 +108,7 @@ def build_ranking(scored):
 
 
 def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=None,
-               trace_segments=None, cols=None):
+               trace_segments=None, cols=None, wind=None):
     """Carte folium : départ (vert) + points de passage (rouges numérotés).
     Si trace_coords est fourni, dessine aussi le tracé coloré par surface."""
     fmap = folium.Map(location=[start[1], start[0]], zoom_start=11, tiles="CartoDB positron")
@@ -81,6 +117,25 @@ def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=
     if trace_coords:
         for cat, seg in colored_runs(trace_coords, trace_segments or []):
             folium.PolyLine(seg, color=CAT_COLOR[cat], weight=5, opacity=0.9).add_to(fmap)
+        # sens de circulation : chevrons orientes, centres exactement sur le trace.
+        # Boite CARREE de taille fixe -> translate(-50%,-50%) centre le glyphe
+        # quelle que soit la rotation (sinon la boite du caractere, plus haute
+        # que large, decale visuellement la fleche apres rotation).
+        # Un chevron ">" pointe vers l'EST au repos : on pivote donc de cap-90.
+        for lat_a, lon_a, cap in direction_arrows(trace_coords, n=14):
+            folium.Marker(
+                [lat_a, lon_a],
+                icon=folium.DivIcon(
+                    icon_size=(0, 0), icon_anchor=(0, 0),
+                    html=(
+                        f'<div style="width:20px;height:20px;'
+                        f'display:flex;align-items:center;justify-content:center;'
+                        f'transform:translate(-50%,-50%) rotate({cap - 90:.0f}deg);">'
+                        f'<span style="font:700 17px/17px -apple-system,Segoe UI,'
+                        f'Helvetica,Arial,sans-serif;color:#0f2f16;'
+                        f'text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;">'
+                        f'&gt;</span></div>'))
+            ).add_to(fmap)
         all_pts += [[c[1], c[0]] for c in trace_coords]
 
     folium.Marker([start[1], start[0]], tooltip=f"Départ : {start_name}",
@@ -92,10 +147,37 @@ def points_map(start, start_name, waypoints, wp_names, height=320, trace_coords=
     for c in (cols or []):
         nm = c.get("name")
         label = f"{nm} · {c['ele']:.0f} m" if nm else f"{c['ele']:.0f} m"
-        icon_name = "mountain" if c.get("kind") == "col" else "location-dot"
-        folium.Marker([c["lat"], c["lon"]],
-                      tooltip=folium.Tooltip(label, permanent=True, direction="top"),
-                      icon=folium.Icon(color="purple", icon=icon_name, prefix="fa")).add_to(fmap)
+        is_col = c.get("kind") == "col"
+        # petit point (au lieu d'une grosse epingle)
+        folium.CircleMarker(
+            [c["lat"], c["lon"]], radius=5, color="#6c3483", weight=2,
+            fill=True, fill_color="#a569bd" if is_col else "#d2b4de",
+            fill_opacity=0.95, tooltip=label).add_to(fmap)
+        # etiquette compacte, ancree juste au-dessus du point
+        folium.Marker(
+            [c["lat"], c["lon"]],
+            icon=folium.DivIcon(
+                icon_size=(0, 0), icon_anchor=(0, 0),
+                html=(f'<div style="transform:translate(-50%,-190%);display:inline-block;'
+                      f'font-size:10px;line-height:12px;font-weight:600;color:#4a235a;'
+                      f'background:rgba(255,255,255,.88);border:1px solid #a569bd;'
+                      f'border-radius:3px;padding:0 3px;white-space:nowrap;">'
+                      f'{"⛰ " if is_col else ""}{label}</div>'))).add_to(fmap)
+
+    if wind:
+        # fleche rouge : sens vers lequel SOUFFLE le vent (direction_deg = origine)
+        vers = (wind["direction_deg"] + 180) % 360
+        fmap.get_root().html.add_child(folium.Element(f"""
+        <div style="position:absolute;top:12px;right:12px;z-index:9999;
+                    background:rgba(255,255,255,.92);border:1px solid #c0392b;
+                    border-radius:6px;padding:6px 9px;text-align:center;
+                    font-family:sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.2);">
+          <div style="font-size:26px;line-height:26px;color:#c0392b;
+                      transform:rotate({vers:.0f}deg);">&#8593;</div>
+          <div style="font-size:11px;font-weight:700;color:#7b241c;margin-top:2px;">
+            {wind['cardinal']}</div>
+          <div style="font-size:10px;color:#555;">{wind['speed_kmh']:.0f} km/h</div>
+        </div>"""))
 
     if len(all_pts) > 1:
         fmap.fit_bounds(all_pts)
@@ -126,21 +208,68 @@ with st.sidebar:
     ride_type = st.selectbox("Type de sortie", list(config.PROFILES_UI.keys()),
                              help="Plat = privilégie voies vertes et évite le dénivelé. "
                                   "Cols = terrain vallonné, trié par D+.")
+    traffic = st.selectbox("Éviter le trafic motorisé", list(config.TRAFFIC_UI.keys()),
+                           index=1,
+                           help="Pénalité appliquée aux axes fréquentés lors du calcul :\n\n"
+                                "• **Aucun** — aucune pénalité, tous les axes sont utilisables.\n"
+                                "• **Modéré** — voies rapides interdites, nationales ×3, "
+                                "départementales ×1.8. Les grands axes restent empruntables "
+                                "si c'est le seul passage.\n"
+                                "• **Maximal** — voies rapides interdites, nationales ×8, "
+                                "départementales ×3. Le calcul fait de gros détours pour "
+                                "privilégier les petites routes.")
+    prefer_cw = st.checkbox("Favoriser les aménagements cyclables", value=True,
+                            help="Privilégie voies vertes et pistes cyclables. "
+                                 "Attention : certaines ne sont pas bitumées.")
+
+    use_wind = st.checkbox("Tenir compte du vent", value=False,
+                           help="Récupère la prévision Open-Meteo pour le départ. "
+                                "C'est la seule option qui nécessite Internet : "
+                                "décochée, l'application reste 100 % hors-ligne.")
+    if use_wind:
+        _jour = st.selectbox("Jour de sortie",
+                             ["Aujourd'hui", "Demain", "Après-demain"])
+        _heure = st.slider("Heure de départ", 5, 21, 9)
+    else:
+        _jour, _heure = "Aujourd'hui", 9
     distance = st.slider("Distance cible (km)", 20, 150, int(config.TARGET_KM), step=5,
                          help="Référence : avec des points de passage, la distance s'adapte à la géographie.")
     n_candidates = st.slider("Nombre de variantes testées", 6, 24, 12, step=2)
 
     go = st.button("Générer les tracés", type="primary", use_container_width=True)
+
+    st.header("Mes tracés")
+    _favs = fav.list_favorites()
+    if _favs:
+        _sel = st.selectbox("Favoris enregistrés", _favs,
+                            format_func=fav.label, label_visibility="collapsed")
+        c_load, c_del = st.columns(2)
+        if c_load.button("Charger", use_container_width=True):
+            try:
+                lp_f = route_from_favorite(_sel)
+                st.session_state["scored"] = [(lp_f, audit(lp_f["csv_rows"]))]
+                st.session_state["distance"] = lp_f["length_km"]
+                st.session_state["start_point"] = tuple(_sel["start"])
+                st.session_state["start_name"] = _sel.get("start_name", "Départ")
+                st.session_state["waypoints"] = [tuple(w) for w in _sel.get("waypoints", [])]
+                st.session_state["wp_names"] = _sel.get("wp_names", [])
+                st.session_state["profile_name"] = _sel.get("profile")
+                st.session_state["profile_params"] = _sel.get("profile_params", {})
+                st.success(f"« {_sel['name']} » chargé.")
+            except BRouterError as e:
+                st.error(f"Rechargement impossible : {e}")
+        if c_del.button("Supprimer", use_container_width=True):
+            fav.delete_favorite(_sel["id"])
+            st.rerun()
+    else:
+        st.caption("Aucun favori. Enregistre un tracé depuis le résumé de sortie.")
     st.divider()
     st.caption("Astuce : pour rouler en Suisse (La Côte / Vaud), pars de Nyon ou Gland.")
     st.caption("« Inconnu » = revêtement non tagué dans OSM, souvent une petite "
                "route bitumée. À vérifier sur la carte avant de rouler.")
-    with st.expander("Réglages estimation (eau, gels, vitesse)"):
+    with st.expander("Ta vitesse (calibration perso)"):
         speed_flat = st.slider("Vitesse à plat (km/h)", 20, 35, config.SPEED_FLAT_KMH)
         speed_hilly = st.slider("Vitesse en montagne (km/h)", 12, 28, config.SPEED_HILLY_KMH)
-        water_lph = st.slider("Eau (L/h)", 0.3, 1.2, float(config.WATER_LPH), step=0.1)
-        gel_gph = st.slider("Glucides (g/h)", 20, 90, config.GEL_GPH, step=5)
-        gel_g = st.slider("Glucides par gel (g)", 15, 40, config.GEL_G, step=5)
 
 # ----------------------------------------------------------------------
 # Résolution des points + carte de confirmation (en direct)
@@ -164,13 +293,17 @@ points_map(start, start_name, waypoints, wp_names, height=320)
 # ----------------------------------------------------------------------
 if go:
     profile_name = config.PROFILES_UI[ride_type]
+    profile_params = dict(config.TRAFFIC_UI[traffic])
+    profile_params["prefer_cycleways"] = prefer_cw
     with st.spinner("Génération des tracés…"):
         try:
             if waypoints:
                 routes = generate_via_waypoints(start, waypoints, distance, n_candidates,
-                                                profile=profile_name)
+                                                profile=profile_name,
+                                                profile_params=profile_params)
             else:
-                routes = generate_all(start, distance, n_candidates, profile=profile_name)
+                routes = generate_all(start, distance, n_candidates, profile=profile_name,
+                                      profile_params=profile_params)
         except BRouterError as e:
             st.error(f"BRouter injoignable : {e}")
             routes = []
@@ -206,6 +339,35 @@ choice = st.selectbox("Tracé à visualiser", list(range(1, len(scored) + 1)),
                       format_func=lambda i: f"Tracé #{i}")
 lp, rep = scored[choice - 1]
 
+# --- Vent (optionnel : seule dépendance réseau de l'application) ---
+_wind, _wind_err, _wa = None, None, None
+if use_wind:
+    _base = st.session_state.get("start_point", start)
+    _delta = {"Aujourd'hui": 0, "Demain": 1, "Après-demain": 2}[_jour]
+    _when = (datetime.now() + timedelta(days=_delta)).replace(
+        hour=int(_heure), minute=0, second=0, microsecond=0)
+    try:
+        _wind = cached_wind(_base[1], _base[0], _when.isoformat())
+    except wd.WindError as e:
+        _wind_err = str(e)
+
+if _wind:
+    _sens, _gain = wd.better_direction(lp["coords"], _wind["direction_deg"])
+    _optimisable = (_sens == "inverse" and _gain >= 5)
+    if _optimisable:
+        _garder = st.checkbox(
+            "Garder le sens d'origine du tracé", value=False,
+            help="Par défaut le tracé est présenté dans le sens le plus favorable "
+                 "au vent. Sur une boucle, le dénivelé total est identique dans "
+                 "les deux sens : seul l'ordre change.")
+        if not _garder:
+            lp = reverse_route(lp)
+            st.success(f"Sens optimisé pour le vent (+{_gain:.0f} pts de confort : "
+                       "fin de sortie et majorité du parcours).")
+        else:
+            st.caption("Sens d'origine conservé.")
+    _wa = wd.analyze_route(lp["coords"], _wind["direction_deg"])
+
 # Analyse pour le resume : ascensions nommees + villages (jointure locale)
 _climbs = climbs(lp["coords"])
 _named = [(c, summit_name(c["top_lat"], c["top_lon"], c["top_ele_m"])) for c in _climbs]
@@ -224,8 +386,8 @@ with col_map:
                st.session_state.get("waypoints", []),
                st.session_state.get("wp_names", []),
                height=520, trace_coords=lp["coords"], trace_segments=lp["csv_rows"],
-               cols=_map_cols)
-    st.caption("🟢 bitume confirmé   ·   🟠 inconnu (non tagué OSM)   ·   🔴 suspect")
+               cols=_map_cols, wind=_wind)
+    st.caption("🟢 bitume confirmé   ·   🟠 inconnu (non tagué OSM)   ·   🔴 suspect   ·   › sens de circulation")
 
 with col_info:
     st.subheader("Parcours")
@@ -239,13 +401,33 @@ with col_info:
     st.metric("Suspect", f"{rep['pct_suspect']:.1f} %", f"{rep['km_suspect']:.1f} km", delta_color="inverse")
 
     try:
-        gpx = route(lp["waypoints"], fmt="gpx", heading=lp["bearing"])
+        gpx = route(lp["waypoints"], fmt="gpx", heading=lp["bearing"],
+                    profile=st.session_state.get("profile_name"),
+                    profile_params=st.session_state.get("profile_params"))
         st.download_button(
             "⬇️ Télécharger le GPX", data=gpx,
             file_name=f"{lp.get('shape', 'boucle').lower()}_{lp['length_km']:.0f}km_{lp['ascend_m']:.0f}mD.gpx",
             mime="application/gpx+xml", use_container_width=True)
     except BRouterError as e:
         st.warning(f"Export GPX indisponible : {e}")
+
+    st.divider()
+    _default_name = f"{lp.get('shape', 'Boucle')} {lp['length_km']:.0f} km"
+    _fav_name = st.text_input("Nom du tracé", value=_default_name,
+                              label_visibility="collapsed", placeholder="Nom du tracé")
+    if st.button("💾 Enregistrer ce tracé", use_container_width=True):
+        fav.save_favorite(
+            _fav_name, lp,
+            st.session_state.get("profile_name"),
+            st.session_state.get("profile_params"),
+            st.session_state.get("start_point", start),
+            st.session_state.get("start_name", start_name),
+            waypoints=st.session_state.get("waypoints"),
+            wp_names=st.session_state.get("wp_names"),
+            terrain=terrain_type(lp["coords"], lp["length_km"], lp["ascend_m"]),
+            pct_paved=rep["pct_paved"])
+        st.success("Enregistré — retrouve-le dans « Mes tracés » à gauche.")
+        st.rerun()
 
 
 # ----------------------------------------------------------------------
@@ -288,14 +470,61 @@ if prof_rows:
     st.pyplot(fig)
     plt.close(fig)
 
-# Estimations
-est = estimate_ride(lp["length_km"], lp["ascend_m"],
-                    speed_flat, speed_hilly, water_lph, gel_gph, gel_g)
+# Vent du jour (si active)
+if _wind_err:
+    st.warning(f"Vent indisponible : {_wind_err}")
+elif _wind:
+    st.markdown("**Vent prévu**")
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric("Vent", f"{_wind['speed_kmh']:.0f} km/h",
+              _wind["cardinal"], delta_color="off")
+    w2.metric("Rafales", f"{_wind['gusts_kmh']:.0f} km/h")
+    if _wa:
+        w3.metric("Vent dans le dos", f"{_wa['pct_dos']:.0f} %",
+                  f"face {_wa['pct_face']:.0f} %", delta_color="off")
+        w4.metric("Fin de sortie", f"{_wa['tail_last_third_pct']:.0f} %",
+                  "dans le dos", delta_color="off")
+    st.caption(f"Prévision Open-Meteo pour le {_wind['time'].replace('T', ' à ')} "
+               f"au point de départ.")
+
+# Estimations : temps (vitesse) + ravitaillement (intensite + meteo)
+_est = estimate_ride(lp["length_km"], lp["ascend_m"], speed_flat, speed_hilly)
+_time_h = _est["time_h"]
+
+fi1, fi2 = st.columns(2)
+intensity = fi1.selectbox("Intensité de la sortie", INTENSITES, index=0)
+meteo = fi2.selectbox("Météo", METEOS, index=1)
+_fuel = fuel_recommendation(intensity, meteo, _time_h)
+_water_l = _time_h * _fuel["water_lph"]
+_gels = _time_h * _fuel["carbs_gph"] / config.GEL_G
+
 e1, e2, e3, e4 = st.columns(4)
-e1.metric("Temps estimé", format_hm(est["time_h"]))
-e2.metric("Vitesse moy.", f"{est['speed_kmh']:.0f} km/h")
-e3.metric("Eau", f"{est['water_l']:.1f} L")
-e4.metric("Gels", f"{est['gels']:.0f}")
+e1.metric("Temps estimé", format_hm(_time_h))
+e2.metric("Vitesse moy.", f"{_est['speed_kmh']:.0f} km/h")
+e3.metric("Eau", f"{_water_l:.1f} L", f"{_fuel['water_lph']:.2f} L/h", delta_color="off")
+e4.metric("Gels", f"{_gels:.0f}", f"{_fuel['carbs_gph']:.0f} g/h", delta_color="off")
+
+with st.expander("Comment sont calculés l'eau et les glucides ?"):
+    st.markdown(
+        f"""
+**Pour cette sortie ({_time_h:.1f} h, {intensity.lower()}, {meteo.lower()})** :
+{_fuel['carbs_gph']:.0f} g de glucides/h et {_fuel['water_lph']:.2f} L d'eau/h.
+
+**Glucides** — le besoin monte avec la durée et l'intensité :
+- sortie courte / facile : ~30 g/h ;
+- dès 1 h 30 – 2 h : ~45–60 g/h ;
+- sortie longue ou intense : jusqu'à 75–90 g/h. Au-delà de 60 g/h, il faut
+  **mélanger plusieurs sucres** (glucose + fructose) et « entraîner son intestin ».
+- Repère : **1 gel ≈ {config.GEL_G:.0f} g** de glucides.
+
+**Eau** — surtout fonction de la chaleur (et de ta transpiration) :
+- frais (<15 °C) : ~0,5 L/h ;
+- tempéré (15–25 °C) : ~0,65 L/h ;
+- chaud (>25 °C) : ~0,9–1 L/h.
+
+Ce sont des **repères d'endurance**, pas une prescription — ajuste selon ton
+ressenti, la chaleur du jour et ta tolérance digestive.
+""")
 
 col_a, col_b = st.columns(2)
 
