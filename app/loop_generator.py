@@ -240,3 +240,54 @@ def generate_via_waypoints(start, waypoints, target_km, n_candidates, profile=No
 
     routes.sort(key=lambda d: abs(d["length_km"] - target_km))
     return routes
+
+
+def generate_for_duration(generator, target_h, tol_min=15, estimator=None,
+                          max_rounds=3, speed_hint=25.0):
+    """Genere des traces respectant une DUREE cible (et non une distance).
+
+    La duree depend de la distance ET du D+, inconnu avant generation : on
+    procede donc par convergence. On part d'une distance estimee, on genere,
+    on mesure la duree reelle estimee de chaque candidat, puis on corrige la
+    distance visee et on recommence si besoin.
+
+    generator : callable(distance_km) -> liste de traces
+    estimator : callable(distance_km, ascend_m) -> duree en heures
+    Renvoie (traces_retenues, distance_finale_km).
+    """
+    if estimator is None:
+        from ride_analysis import estimate_ride
+        def estimator(d, a):
+            return estimate_ride(d, a)["time_h"]
+
+    tol_h = tol_min / 60.0
+    dist = max(5.0, target_h * speed_hint)   # 1re estimation (sans denivele)
+    best, best_dist = [], dist
+
+    for _ in range(max_rounds):
+        routes = generator(dist)
+        if not routes:
+            dist *= 0.85                      # rien de routable : on reduit
+            continue
+
+        for r in routes:
+            r["est_time_h"] = estimator(r["length_km"], r["ascend_m"])
+
+        dans_cible = [r for r in routes
+                      if abs(r["est_time_h"] - target_h) <= tol_h]
+        if len(dans_cible) > len(best):
+            best, best_dist = dans_cible, dist
+        if len(dans_cible) >= 3:              # assez de choix : on s'arrete
+            break
+
+        # correction : ratio median entre duree visee et duree obtenue
+        ratios = sorted(target_h / max(r["est_time_h"], 1e-6) for r in routes)
+        ratio = ratios[len(ratios) // 2]
+        dist *= min(max(ratio, 0.5), 1.8)
+
+    if not best:                              # aucun dans la tolerance :
+        routes = generator(best_dist)         # on renvoie les plus proches
+        for r in routes:
+            r["est_time_h"] = estimator(r["length_km"], r["ascend_m"])
+        best = sorted(routes, key=lambda r: abs(r["est_time_h"] - target_h))[:5]
+    return best, best_dist

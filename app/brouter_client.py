@@ -10,6 +10,7 @@ Parametres HTTP supportes par le serveur (verifie dans ServerHandler.java) :
 """
 
 import json
+import re
 
 import requests
 
@@ -111,6 +112,29 @@ def parse_csv(body):
 
 def total_length_km(csv_rows):
     return sum(r["dist_m"] for r in csv_rows) / 1000.0
+
+
+def tag_gpx_cycling(gpx_xml, name=None):
+    """Ajoute <type>cycling</type> dans la trace GPX (et remplace son <name>).
+
+    BRouter n'ecrit pas de type d'activite par defaut. Certaines plateformes
+    (Strava, Garmin) l'utilisent pour classer l'import ; d'autres (Coros)
+    demandent le mode a l'utilisateur et ignorent ce champ.
+    """
+    if "<trk>" not in gpx_xml:
+        return gpx_xml
+    out = gpx_xml
+    if name:
+        safe = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # remplace le <name> existant de la trace, sinon en insere un
+        if re.search(r"(<trk>\s*\n\s*)<name>.*?</name>", out, re.S):
+            out = re.sub(r"(<trk>\s*\n\s*)<name>.*?</name>",
+                         rf"\g<1><name>{safe}</name>", out, count=1, flags=re.S)
+        else:
+            out = out.replace("<trk>\n", f"<trk>\n  <name>{safe}</name>\n", 1)
+    if "<type>" not in out.split("<trkseg>")[0]:
+        out = re.sub(r"(</name>\s*\n)", r"\g<1>  <type>cycling</type>\n", out, count=1)
+    return out
 
 
 def _parse_geojson_messages(messages):

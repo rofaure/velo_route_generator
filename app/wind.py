@@ -146,3 +146,89 @@ def better_direction(coords, wind_from_deg):
     fwd = wind_score(analyze_route(coords, wind_from_deg))
     rev = wind_score(analyze_route(list(reversed(coords)), wind_from_deg))
     return ("inverse", rev - fwd) if rev > fwd else ("normal", fwd - rev)
+
+
+# ----------------------------------------------------------------------
+# Lecture par phase de sortie (début / milieu / fin)
+# ----------------------------------------------------------------------
+PHASES = ("Début", "Milieu", "Fin")
+
+
+def _segments_with_dist(coords, wind_from_deg):
+    segs = []
+    for i in range(1, len(coords)):
+        lon1, lat1 = coords[i - 1][0], coords[i - 1][1]
+        lon2, lat2 = coords[i][0], coords[i][1]
+        d = haversine(lon1, lat1, lon2, lat2)
+        if d > 0:
+            segs.append((d, classify(bearing(lon1, lat1, lon2, lat2), wind_from_deg)))
+    return segs
+
+
+def phase_summary(coords, wind_from_deg):
+    """Vent dominant sur chaque tiers du parcours.
+
+    Renvoie [{'phase', 'km_debut', 'km_fin', 'dominant', 'pct_face',
+              'pct_dos', 'pct_travers'}, ...] — pourcentages en part de
+    DISTANCE de la phase (les trois totalisent 100 %).
+    """
+    segs = _segments_with_dist(coords, wind_from_deg)
+    total = sum(d for d, _ in segs)
+    if total <= 0:
+        return []
+
+    bornes = [total / 3, 2 * total / 3, total]
+    acc = [{"Face": 0.0, "Dos": 0.0, "Travers": 0.0} for _ in range(3)]
+    debuts, fins = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    cum, idx = 0.0, 0
+    for d, c in segs:
+        while idx < 2 and cum >= bornes[idx]:
+            idx += 1
+            debuts[idx] = cum
+        acc[idx][c] += d
+        cum += d
+        fins[idx] = cum
+
+    out = []
+    for i in range(3):
+        tot = sum(acc[i].values())
+        if tot <= 0:
+            continue
+        pcts = {k: 100.0 * v / tot for k, v in acc[i].items()}
+        out.append({
+            "phase": PHASES[i],
+            "km_debut": debuts[i] / 1000.0,
+            "km_fin": fins[i] / 1000.0,
+            "dominant": max(pcts, key=pcts.get),
+            "pct_face": pcts["Face"],
+            "pct_dos": pcts["Dos"],
+            "pct_travers": pcts["Travers"],
+        })
+    return out
+
+
+def phase_sentence(phases):
+    """Phrase résumant le vent au fil de la sortie, en langage courant."""
+    if not phases:
+        return ""
+    mots = {"Face": "vent de face", "Dos": "vent dans le dos",
+            "Travers": "vent de côté"}
+    # regroupe les phases consécutives de même dominante
+    groupes = []
+    for p in phases:
+        if groupes and groupes[-1][0] == p["dominant"]:
+            groupes[-1][1].append(p["phase"])
+        else:
+            groupes.append([p["dominant"], [p["phase"]]])
+
+    bouts = []
+    for dom, noms in groupes:
+        if len(noms) == 3:
+            libelle = "sur toute la sortie"
+        elif len(noms) == 2:
+            libelle = f"{noms[0].lower()} et {noms[1].lower()} de sortie"
+        else:
+            libelle = {"Début": "en début de sortie", "Milieu": "à mi-parcours",
+                       "Fin": "en fin de sortie"}[noms[0]]
+        bouts.append(f"{mots[dom]} {libelle}")
+    return ", puis ".join(bouts).capitalize() + "."

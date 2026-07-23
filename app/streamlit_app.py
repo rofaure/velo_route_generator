@@ -12,7 +12,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 import config
-from loop_generator import generate_all, generate_via_waypoints
+from loop_generator import (generate_all, generate_via_waypoints,
+                            generate_for_duration)
 from surface_audit import audit
 from geo_utils import colored_runs, direction_arrows
 from ride_analysis import (terrain_type, climbs, steep_descents,
@@ -24,7 +25,7 @@ import favorites as fav
 import wind as wd
 from brouter_client import route_geojson
 from datetime import datetime, timedelta
-from brouter_client import route, BRouterError
+from brouter_client import route, BRouterError, tag_gpx_cycling
 
 st.set_page_config(page_title="Tracés vélo route", page_icon="🚴", layout="wide")
 
@@ -101,6 +102,7 @@ def build_ranking(scored):
         "Terrain": terrain_type(lp["coords"], lp["length_km"], lp["ascend_m"]),
         "Distance (km)": round(lp["length_km"], 1),
         "D+ (m)": round(lp["ascend_m"]),
+        **({"Durée": format_hm(lp["est_time_h"])} if lp.get("est_time_h") else {}),
         "Confiance": round(rep["confidence"], 1),
         "Bitume %": round(rep["pct_paved"], 1),
         "Inconnu %": round(rep["pct_unknown"], 1),
@@ -232,8 +234,20 @@ with st.sidebar:
         _heure = st.slider("Heure de départ", 5, 21, 9)
     else:
         _jour, _heure = "Aujourd'hui", 9
-    distance = st.slider("Distance cible (km)", 20, 150, int(config.TARGET_KM), step=5,
-                         help="Référence : avec des points de passage, la distance s'adapte à la géographie.")
+    objectif = st.radio("Objectif", ["Distance", "Durée"], horizontal=True,
+                        help="« Durée » ajuste automatiquement la distance selon "
+                             "le dénivelé et ta vitesse, pour tenir le temps voulu.")
+    if objectif == "Distance":
+        distance = st.slider("Distance cible (km)", 20, 150, int(config.TARGET_KM),
+                             step=5, help="Avec des points de passage, la distance "
+                                          "s'adapte à la géographie.")
+        duree_h = None
+    else:
+        _h = st.slider("Temps disponible (h)", 1, 8, 3)
+        _m = st.select_slider("et (min)", options=[0, 15, 30, 45], value=0)
+        duree_h = _h + _m / 60.0
+        distance = int(duree_h * 25)   # 1re estimation, affinee a la generation
+        st.caption(f"Objectif : **{_h} h {_m:02d}** (± 15 min)")
     n_candidates = st.slider("Nombre de variantes testées", 6, 24, 12, step=2)
 
     go = st.button("Générer les tracés", type="primary", use_container_width=True)
@@ -297,13 +311,21 @@ if go:
     profile_params["prefer_cycleways"] = prefer_cw
     with st.spinner("Génération des tracés…"):
         try:
-            if waypoints:
-                routes = generate_via_waypoints(start, waypoints, distance, n_candidates,
-                                                profile=profile_name,
-                                                profile_params=profile_params)
+            def _gen(dist_km):
+                if waypoints:
+                    return generate_via_waypoints(start, waypoints, dist_km, n_candidates,
+                                                  profile=profile_name,
+                                                  profile_params=profile_params)
+                return generate_all(start, dist_km, n_candidates, profile=profile_name,
+                                    profile_params=profile_params)
+
+            if duree_h:
+                _estim = lambda d, a: estimate_ride(d, a, speed_flat, speed_hilly)["time_h"]
+                routes, distance = generate_for_duration(
+                    _gen, duree_h, tol_min=15, estimator=_estim,
+                    speed_hint=(speed_flat + speed_hilly) / 2)
             else:
-                routes = generate_all(start, distance, n_candidates, profile=profile_name,
-                                      profile_params=profile_params)
+                routes = _gen(distance)
         except BRouterError as e:
             st.error(f"BRouter injoignable : {e}")
             routes = []
@@ -312,7 +334,10 @@ if go:
                    "ou ajuste les points de passage.")
     else:
         scored = [(lp, audit(lp["csv_rows"])) for lp in routes]
-        if profile_name == "roadclimb":
+        if duree_h:
+            scored.sort(key=lambda x: (abs(x[0].get("est_time_h", 0) - duree_h),
+                                       -x[1]["confidence"]))
+        elif profile_name == "roadclimb":
             scored.sort(key=lambda x: (-x[0]["ascend_m"], -x[1]["confidence"]))
         else:
             scored.sort(key=lambda x: (-x[1]["confidence"], abs(x[0]["length_km"] - distance)))
@@ -332,7 +357,9 @@ if not scored:
 # Résultats
 # ----------------------------------------------------------------------
 st.subheader("Tracés générés (triés par confiance)")
-st.caption(f"{len(scored)} tracé(s) — boucles et aller-retours passant par tes points.")
+_d = st.session_state.get("duree_h")
+st.caption(f"{len(scored)} tracé(s) — boucles et aller-retours." +
+           (f" Objectif : {format_hm(_d)} ± 15 min." if _d else ""))
 st.dataframe(build_ranking(scored), use_container_width=True, hide_index=True)
 
 choice = st.selectbox("Tracé à visualiser", list(range(1, len(scored) + 1)),
@@ -351,21 +378,33 @@ if use_wind:
     except wd.WindError as e:
         _wind_err = str(e)
 
+# --- Sens du parcours : toujours modifiable ---
+# Quand le vent est actif, on PRE-SELECTIONNE le sens le plus favorable,
+# mais l'utilisateur garde la main dans tous les cas.
+_reco_inverse = False
 if _wind:
     _sens, _gain = wd.better_direction(lp["coords"], _wind["direction_deg"])
-    _optimisable = (_sens == "inverse" and _gain >= 5)
-    if _optimisable:
-        _garder = st.checkbox(
-            "Garder le sens d'origine du tracé", value=False,
-            help="Par défaut le tracé est présenté dans le sens le plus favorable "
-                 "au vent. Sur une boucle, le dénivelé total est identique dans "
-                 "les deux sens : seul l'ordre change.")
-        if not _garder:
-            lp = reverse_route(lp)
-            st.success(f"Sens optimisé pour le vent (+{_gain:.0f} pts de confort : "
-                       "fin de sortie et majorité du parcours).")
-        else:
-            st.caption("Sens d'origine conservé.")
+    _reco_inverse = (_sens == "inverse" and _gain >= 5)
+
+_opts = ["Sens d'origine", "Sens inversé"]
+_labels = dict(_opts and zip(_opts, _opts))
+if _reco_inverse:
+    _labels["Sens inversé"] = "Sens inversé ✅ conseillé (vent)"
+elif _wind:
+    _labels["Sens d'origine"] = "Sens d'origine ✅ conseillé (vent)"
+
+_choix_sens = st.radio(
+    "Sens du parcours", _opts, index=1 if _reco_inverse else 0,
+    horizontal=True, key=f"sens_{choice}",
+    format_func=lambda o: _labels.get(o, o),
+    help="Sur une boucle, le dénivelé total est identique dans les deux sens : "
+         "seul l'ordre des montées et des descentes change. Le sens choisi "
+         "s'applique à la carte, au profil et au GPX exporté.")
+
+if _choix_sens == "Sens inversé":
+    lp = reverse_route(lp)
+
+if _wind:
     _wa = wd.analyze_route(lp["coords"], _wind["direction_deg"])
 
 # Analyse pour le resume : ascensions nommees + villages (jointure locale)
@@ -404,6 +443,9 @@ with col_info:
         gpx = route(lp["waypoints"], fmt="gpx", heading=lp["bearing"],
                     profile=st.session_state.get("profile_name"),
                     profile_params=st.session_state.get("profile_params"))
+        gpx = tag_gpx_cycling(
+            gpx, f"{lp.get('shape', 'Boucle')} {lp['length_km']:.0f} km · "
+                 f"{lp['ascend_m']:.0f} m D+")
         st.download_button(
             "⬇️ Télécharger le GPX", data=gpx,
             file_name=f"{lp.get('shape', 'boucle').lower()}_{lp['length_km']:.0f}km_{lp['ascend_m']:.0f}mD.gpx",
@@ -475,17 +517,31 @@ if _wind_err:
     st.warning(f"Vent indisponible : {_wind_err}")
 elif _wind:
     st.markdown("**Vent prévu**")
-    w1, w2, w3, w4 = st.columns(4)
+    w1, w2 = st.columns([1, 3])
     w1.metric("Vent", f"{_wind['speed_kmh']:.0f} km/h",
-              _wind["cardinal"], delta_color="off")
-    w2.metric("Rafales", f"{_wind['gusts_kmh']:.0f} km/h")
-    if _wa:
-        w3.metric("Vent dans le dos", f"{_wa['pct_dos']:.0f} %",
-                  f"face {_wa['pct_face']:.0f} %", delta_color="off")
-        w4.metric("Fin de sortie", f"{_wa['tail_last_third_pct']:.0f} %",
-                  "dans le dos", delta_color="off")
-    st.caption(f"Prévision Open-Meteo pour le {_wind['time'].replace('T', ' à ')} "
-               f"au point de départ.")
+              f"{_wind['cardinal']} · rafales {_wind['gusts_kmh']:.0f}",
+              delta_color="off")
+    _phases = wd.phase_summary(lp["coords"], _wind["direction_deg"])
+    if _phases:
+        w2.markdown(f"### {wd.phase_sentence(_phases)}")
+
+    if _phases:
+        _icone = {"Dos": "🟢 dans le dos", "Travers": "🟡 de côté", "Face": "🔴 de face"}
+        st.dataframe(pd.DataFrame([{
+            "Phase": f"{p['phase']} ({p['km_debut']:.0f}–{p['km_fin']:.0f} km)",
+            "Vent dominant": _icone[p["dominant"]],
+            "Dans le dos": f"{p['pct_dos']:.0f} %",
+            "De côté": f"{p['pct_travers']:.0f} %",
+            "De face": f"{p['pct_face']:.0f} %",
+        } for p in _phases]), use_container_width=True, hide_index=True)
+        if _wa:
+            st.caption(
+                f"Sur l'ensemble du parcours : **{_wa['pct_dos']:.0f} %** dans le dos, "
+                f"**{_wa['pct_travers']:.0f} %** de côté, **{_wa['pct_face']:.0f} %** "
+                f"de face — en part de **distance** (les trois totalisent 100 %). "
+                f"« De côté » = vent à plus de 45° de ton axe : il freine peu mais "
+                f"peut déporter. Prévision Open-Meteo pour le "
+                f"{_wind['time'].replace('T', ' à ')} au point de départ.")
 
 # Estimations : temps (vitesse) + ravitaillement (intensite + meteo)
 _est = estimate_ride(lp["length_km"], lp["ascend_m"], speed_flat, speed_hilly)
